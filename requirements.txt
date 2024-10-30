@@ -33,5 +33,7 @@ psycogreen==1.0.2
 psycopg2==2.9.9
 redis==5.0.8
 requests==2.32.3
-safe-eth-py[django]==6.0.0b40
+# safe-eth-py[django]==+git 6.0.0b40
+# TODO: bump to a newest version once released.
+git+https://github.com/G7DAO/safe-eth-py.git@main#egg=safe-eth-py
 web3==6.20.2
