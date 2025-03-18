@@ -4,12 +4,11 @@ from unittest.mock import MagicMock
 from django.test import TestCase
 
 from eth_account import Account
-from hexbytes import HexBytes
 from safe_eth.eth.constants import NULL_ADDRESS
 from safe_eth.eth.ethereum_client import TracingManager
 from safe_eth.safe.tests.safe_test_case import SafeTestCaseMixin
 
-from ..models import SafeMasterCopy
+from ..models import InternalTxType, SafeMasterCopy
 from ..services.safe_service import (
     CannotGetSafeInfoFromBlockchain,
     CannotGetSafeInfoFromDB,
@@ -17,13 +16,55 @@ from ..services.safe_service import (
     SafeInfo,
     SafeServiceProvider,
 )
-from .factories import InternalTxFactory, SafeLastStatusFactory, SafeMasterCopyFactory
+from ..services.safe_service import logger as safe_service_logger
+from ..utils import clean_receipt_log
+from .factories import (
+    EthereumTxFactory,
+    InternalTxFactory,
+    SafeLastStatusFactory,
+    SafeMasterCopyFactory,
+)
+from .mocks.mocks_safe_creation import (
+    gelato_relay_creation_mock,
+    multiple_safes_same_tx_creation_mock,
+    multisend_creation_mock,
+)
 from .mocks.traces import create_trace, creation_internal_txs
 
 
 class TestSafeService(SafeTestCaseMixin, TestCase):
     def setUp(self) -> None:
         self.safe_service = SafeServiceProvider()
+
+    def test_get_safe_creation_info(self):
+        """
+        get_safe_creation_info should only return the TX of type CREATE
+        """
+        random_address = Account.create().address
+        self.assertIsNone(self.safe_service.get_safe_creation_info(random_address))
+
+        InternalTxFactory(
+            contract_address=random_address,
+            tx_type=InternalTxType.CREATE.value,
+            ethereum_tx__status=0,
+        )
+
+        self.assertIsNone(self.safe_service.get_safe_creation_info(random_address))
+
+        InternalTxFactory(
+            contract_address=random_address,
+            ethereum_tx__status=1,
+            tx_type=InternalTxType.CREATE.value,
+        )
+
+        InternalTxFactory(
+            contract_address=random_address,
+            ethereum_tx__status=1,
+            tx_type=InternalTxType.CALL.value,
+        )
+
+        safe_creation_info = self.safe_service.get_safe_creation_info(random_address)
+        self.assertIsInstance(safe_creation_info, SafeCreationInfo)
 
     def test_get_safe_creation_info_with_tracing(self):
         """
@@ -32,7 +73,11 @@ class TestSafeService(SafeTestCaseMixin, TestCase):
         random_address = Account.create().address
         self.assertIsNone(self.safe_service.get_safe_creation_info(random_address))
 
-        InternalTxFactory(contract_address=random_address, ethereum_tx__status=0)
+        InternalTxFactory(
+            contract_address=random_address,
+            tx_type=InternalTxType.CREATE.value,
+            ethereum_tx__status=0,
+        )
         self.assertIsNone(self.safe_service.get_safe_creation_info(random_address))
 
         with mock.patch.object(
@@ -44,6 +89,7 @@ class TestSafeService(SafeTestCaseMixin, TestCase):
             InternalTxFactory(
                 contract_address=random_address,
                 ethereum_tx__status=1,
+                tx_type=InternalTxType.CREATE.value,
                 trace_address="0",
             )
             safe_creation_info = self.safe_service.get_safe_creation_info(
@@ -62,7 +108,10 @@ class TestSafeService(SafeTestCaseMixin, TestCase):
         self.assertIsNone(self.safe_service.get_safe_creation_info(random_address))
 
         creation_trace = InternalTxFactory(
-            contract_address=random_address, ethereum_tx__status=1, trace_address="0"
+            contract_address=random_address,
+            tx_type=InternalTxType.CREATE.value,
+            ethereum_tx__status=1,
+            trace_address="0",
         )
         safe_creation = self.safe_service.get_safe_creation_info(random_address)
         self.assertEqual(safe_creation.creator, creation_trace.ethereum_tx._from)
@@ -94,6 +143,7 @@ class TestSafeService(SafeTestCaseMixin, TestCase):
         creation_trace = InternalTxFactory(
             contract_address=random_address,
             ethereum_tx__status=1,
+            tx_type=InternalTxType.CREATE.value,
             trace_address="0",
             ethereum_tx__data=None,
         )
@@ -113,7 +163,10 @@ class TestSafeService(SafeTestCaseMixin, TestCase):
     ):
         random_address = Account.create().address
         InternalTxFactory(
-            contract_address=random_address, ethereum_tx__status=1, trace_address=""
+            contract_address=random_address,
+            tx_type=InternalTxType.CREATE.value,
+            ethereum_tx__status=1,
+            trace_address="",
         )
         safe_creation_info = self.safe_service.get_safe_creation_info(random_address)
         self.assertIsInstance(safe_creation_info, SafeCreationInfo)
@@ -165,18 +218,73 @@ class TestSafeService(SafeTestCaseMixin, TestCase):
         self.assertEqual(safe_info.version, None)
 
     def test_decode_creation_data(self):
-        # Safe created using MultiSend on BSC
-        # https://bscscan.com/tx/0x35868d8794c36e1f539c9459385159ecc248cf3ebb02b98447861ad519019bc2
-        data = HexBytes(
-            "0x8d80ff0a000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000004f200a6b71e26c5e0845f74c812102ca7114b6a896ab2000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002041688f0b90000000000000000000000003e5c63644e683549055b9be8653de26e0b4cd36e000000000000000000000000000000000000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000164b63e800d0000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000140000000000000000000000000f48f2b2d2a534e402487b3ee7c18c33aec0fe5e400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000004c3c38a459f0baabb763290111b66ed01b5fefa200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000eace5e6ac77210af7b26f315925df83a3f8477c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002446a761202000000000000000000000000eace5e6ac77210af7b26f315925df83a3f8477c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000014000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001c000000000000000000000000000000000000000000000000000000000000000440d582f1300000000000000000000000065f8236309e5a99ff0d129d04e486ebce20dc7b000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000415fc5ee3e2b15103ebbb6a4f2a41213018d7d4f8aeaaee7e4de83bae3e15bf01d0a3809560287843f70a125c5997141b2f2e6e810f3a3319d8b4d3127104424551b000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        for creation_mock in (multisend_creation_mock, gelato_relay_creation_mock):
+            with self.subTest(creation_mock=creation_mock):
+                proxy_creation_data_list = self.safe_service._decode_creation_data(
+                    creation_mock["data"]
+                )
+                self.assertEqual(len(proxy_creation_data_list), 1)
+                proxy_creation_data = proxy_creation_data_list[0]
+                self.assertEqual(
+                    proxy_creation_data.singleton, creation_mock["expected_singleton"]
+                )
+                self.assertEqual(
+                    proxy_creation_data.initializer,
+                    creation_mock["expected_initializer"],
+                )
+                self.assertEqual(
+                    proxy_creation_data.salt_nonce, creation_mock["expected_salt_nonce"]
+                )
+
+    def test_decode_creation_data_multiple_safes_same_tx(self):
+        ethereum_tx = EthereumTxFactory(
+            logs=[
+                clean_receipt_log(log)
+                for log in multiple_safes_same_tx_creation_mock["tx_logs"]
+            ]
+        )
+        self.assertEqual(
+            ethereum_tx.get_deployed_proxies_from_logs(),
+            multiple_safes_same_tx_creation_mock["proxies_deployed"],
         )
 
-        results = self.safe_service._decode_creation_data(data)
-        self.assertEqual(len(results), 1)
-        result = results[0]
-        self.assertEqual(result.singleton, "0x3E5c63644E683549055b9Be8653de26E0B4CD36E")
-        self.assertEqual(
-            result.initializer,
-            b"\xb6>\x80\r\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01@\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xf4\x8f+-*SN@$\x87\xb3\xee|\x18\xc3:\xec\x0f\xe5\xe4\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00L<8\xa4Y\xf0\xba\xab\xb7c)\x01\x11\xb6n\xd0\x1b_\xef\xa2\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+        # There are 2 Safe creations inside of this transaction
+        results = self.safe_service._decode_creation_data(
+            multiple_safes_same_tx_creation_mock["data"]
         )
-        self.assertEqual(result.salt_nonce, 0)
+        self.assertEqual(len(results), 2)
+
+        # We need to get the right one for every Safe
+        for safe_address in multiple_safes_same_tx_creation_mock["proxies_deployed"]:
+            with self.subTest(safe_address=safe_address):
+                proxy_creation_data = self.safe_service._process_creation_data(
+                    safe_address,
+                    multiple_safes_same_tx_creation_mock["data"],
+                    ethereum_tx,
+                )
+                creation_mock = multiple_safes_same_tx_creation_mock[safe_address]
+                self.assertEqual(
+                    proxy_creation_data.singleton, creation_mock["expected_singleton"]
+                )
+                self.assertEqual(
+                    proxy_creation_data.initializer,
+                    creation_mock["expected_initializer"],
+                )
+                self.assertEqual(
+                    proxy_creation_data.salt_nonce, creation_mock["expected_salt_nonce"]
+                )
+
+        with self.assertLogs(safe_service_logger, level="WARNING") as cm:
+            random_safe_address = Account.create().address
+            self.assertIsNone(
+                self.safe_service._process_creation_data(
+                    random_safe_address,
+                    multiple_safes_same_tx_creation_mock["data"],
+                    ethereum_tx,
+                )
+            )
+
+            self.assertIn(
+                f'[{random_safe_address}] Proxy creation data is not matching the proxies deployed {multiple_safes_same_tx_creation_mock["proxies_deployed"]}',
+                cm.output[0],
+            )
