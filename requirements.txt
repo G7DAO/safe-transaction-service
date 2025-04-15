@@ -32,6 +32,6 @@ psycogreen==1.0.2
 psycopg[binary]==3.2.3
 redis==5.2.1
 requests==2.32.3
-git+https://github.com/G7DAO/safe-eth-py.git@g7#egg=safe-eth-py
+safe-eth-py=7.1.1
 web3==7.8.0
 
